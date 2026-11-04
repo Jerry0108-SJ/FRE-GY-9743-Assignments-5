@@ -88,9 +88,36 @@ class YieldCurve(Model):
         scaler: float = 1.0, accumulate: bool = False,
     ) -> None:
         """Write raw DF derivatives into component-ordered blocks in place."""
-        # TODO 2: Follow the reference chain recursively and apply the product rule.
-        # Use the model helpers; scale the new contribution and overwrite or accumulate.
-        raise NotImplementedError("TODO 2")
+        self.resize_gradient(gradient_vector)
+
+        def _gradient_recursive(component_index, outer_scaler, outer_accumulate):
+            this_component: YieldCurveModelComponent = self.retrieve_model_component(
+                component_index
+            )
+            this_index = this_component.component_identifier
+            block_idx = self.retrieve_model_component_index(component_index)
+
+            reference_index = getattr(this_index, "reference_index", None)
+            if reference_index is None:
+                df_ref = 1.0
+            else:
+                df_ref = self.discount_factor(reference_index, expiry_date)
+
+            df_local = this_component.discount_factor(expiry_date)
+
+            this_component.discount_factor_gradient_wrt_state(
+                expiry_date, gradient_vector[block_idx],
+                scaler=outer_scaler * df_ref, accumulate=outer_accumulate,
+            )
+
+            if reference_index is not None:
+                _gradient_recursive(
+                    reference_index,
+                    outer_scaler * df_local,
+                    outer_accumulate,
+                )
+
+        _gradient_recursive(index, scaler, accumulate)
 
 
 class YieldCurveModelComponent(ModelComponent):
@@ -160,9 +187,16 @@ class YieldCurveModelComponent(ModelComponent):
         scaler: float = 1.0, accumulate: bool = False,
     ) -> None:
         """Write raw local DF derivatives into the supplied array in place."""
-        # TODO 1: Calculate the local DF gradient using the interpolator's integral gradient.
-        # Apply scaler to the new contribution; overwrite or add according to accumulate.
-        raise NotImplementedError("TODO 1")
+        time_to_expiry = accrued(self.value_date, expiry_date)
+        df = self.discount_factor(expiry_date)
+        integral_grad = self.state_data_interpolator.gradient_of_integrated_value_wrt_ordinate(
+            0.0, time_to_expiry
+        )
+        contribution = scaler * (-df) * integral_grad
+        if accumulate:
+            gradient_vector += contribution
+        else:
+            gradient_vector[:] = contribution
 
 
 ModelDeserializerRegistry().register(YieldCurve._model_type.to_string(), YieldCurve.deserialize)
